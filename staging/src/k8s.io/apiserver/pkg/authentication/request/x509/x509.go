@@ -20,6 +20,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/component-base/metrics"
 	"k8s.io/component-base/metrics/legacyregistry"
+	"k8s.io/klog/v2"
 )
 
 /*
@@ -125,11 +127,25 @@ func (a *Authenticator) AuthenticateRequest(req *http.Request) (*authenticator.R
 		}
 	}
 
-	remaining := req.TLS.PeerCertificates[0].NotAfter.Sub(time.Now())
+	now := time.Now()
+	peerCertificate := req.TLS.PeerCertificates[0]
+	remaining := peerCertificate.NotAfter.Sub(now)
 	clientCertificateExpirationHistogram.Observe(remaining.Seconds())
-	chains, err := req.TLS.PeerCertificates[0].Verify(optsCopy)
+	chains, err := peerCertificate.Verify(optsCopy)
 	if err != nil {
 		return nil, false, err
+	}
+
+	threshold := 24 * 365 * time.Hour
+	if remaining.Seconds() > 0 && remaining.Seconds() < threshold.Seconds() {
+		klog.Warningf("remaining=%v; threshold=%v", remaining, threshold)
+		clientIP, _, err := net.SplitHostPort(req.RemoteAddr)
+		if err != nil {
+			klog.Warningf("Failed to get Client IP from req.RemoteAddr: %v, err: %v", req.RemoteAddr, err)
+			clientIP = ""
+		}
+		commonName := peerCertificate.Subject.CommonName
+		klog.Warningf("Client certificate is about to expire: ClientIP=%s, CN=%s", clientIP, commonName)
 	}
 
 	var errlist []error
